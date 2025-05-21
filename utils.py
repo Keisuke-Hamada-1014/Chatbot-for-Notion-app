@@ -1,122 +1,125 @@
 """
-このファイルは、アプリケーション全体で使用するユーティリティ関数を定義するモジュールです。
+このファイルは、画面表示以外の様々な機能を提供する関数を定義するファイルです。
 """
 
 ############################################################
 # 1. ライブラリの読み込み
 ############################################################
-import logging
+# streamlitアプリの表示を担当するモジュール
 import streamlit as st
-from langchain_openai import ChatOpenAI
-from langchain.chains import ConversationalRetrievalChain
-from langchain_community.vectorstores import Chroma
+# ログ出力を行うためのモジュール
+import logging
+# 定数ファイルをインポート
 import constants as ct
+# LangChainのRAGモジュールをインポート
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain.prompts import PromptTemplate
+from langchain.chains import create_retrieval_chain
+# JSONデータを扱うためのモジュール
+import json
+
+# ロガーの設定
+logger = logging.getLogger(ct.LOGGER_NAME)
 
 
 ############################################################
 # 2. ユーティリティ関数
 ############################################################
-def build_error_message(base_message):
+
+def build_error_message(message):
     """
-    エラーメッセージを構築する関数
+    エラーメッセージを整形する関数
     
     Args:
-        base_message: 基本のエラーメッセージ
+        message: 表示するエラーメッセージの本文
         
     Returns:
         str: 整形されたエラーメッセージ
     """
-    return f"{base_message}\n{ct.ERROR_CONTACT_MESSAGE}"
+    return f"エラーが発生しました: {message}\n管理者にお問い合わせください。"
 
 
 def get_llm_response(query):
     """
-    ユーザーのクエリに対するLLMからの回答を取得する関数
+    ユーザーの質問に対してLLMの回答を取得する関数
     
     Args:
-        query: ユーザーの質問文字列
+        query: ユーザーからの質問文
         
     Returns:
-        dict: LLMからの回答（辞書形式）
+        dict: LLMからの回答と参照情報を含む辞書
     """
-    # 現在のアプリケーションモードを取得
-    mode = st.session_state.mode
+    # セッション状態からLLMとRetrieverを取得
+    llm = st.session_state.llm
+    retriever = st.session_state.retriever
     
-    # セッション状態からベクターストアを取得
-    vectorstore = st.session_state.vectorstore
+    # モードに応じたプロンプトテンプレートを選択
+    if st.session_state.mode == ct.ANSWER_MODE_1:
+        # 社内文書検索モード用プロンプト
+        prompt_template = PromptTemplate.from_template(ct.SEARCH_PROMPT_TEMPLATE)
+    else:
+        # 社内問い合わせモード用プロンプト
+        prompt_template = PromptTemplate.from_template(ct.CONTACT_PROMPT_TEMPLATE)
     
-    # LLMの設定
-    llm = ChatOpenAI(
-        model_name=ct.LLM_MODEL_NAME,
-        temperature=ct.LLM_TEMPERATURE
-    )
+    # Retrieverを使って関連ドキュメントを取得
+    retrieval_results = retriever.invoke(query)
+    logger.info(f"検索結果: {len(retrieval_results)}件のドキュメントが見つかりました")
     
-    # 検索モードに応じた処理
-    if mode == ct.ANSWER_MODE_1:
-        # 社内文書検索モード：関連ドキュメントの検索
-        docs = vectorstore.similarity_search(query, k=ct.TOP_K_DOCUMENTS)
-        
-        # 関連ドキュメントから回答を構築
-        sources = []
-        for doc in docs:
-            metadata = doc.metadata
-            sources.append({
-                "name": metadata.get("title", "不明"),
-                "url": metadata.get("url", "#"),
-                "page": metadata.get("page", ""),
-                "content": doc.page_content
-            })
-        
+    # 検索結果からソース情報を抽出
+    sources = []
+    for doc in retrieval_results:
+        # メタデータからソース情報を取得
+        metadata = doc.metadata
+        source_info = {
+            "name": metadata.get("title", "不明なタイトル"),
+            "url": metadata.get("url", ""),
+            "page": metadata.get("page", ""),
+            "content": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
+        }
+        sources.append(source_info)
+    
+    # コンテキストを構築
+    context = "\n\n".join([doc.page_content for doc in retrieval_results])
+    
+    # 検索結果がない場合の処理
+    if not context:
+        logger.warning("検索結果が見つかりませんでした")
         return {
-            "answer": "以下の社内文書が関連しています：",
-            "sources": sources
+            "answer": "申し訳ありませんが、ご質問に関連する情報が見つかりませんでした。\n質問の表現を変えるか、別のトピックについてお尋ねください。",
+            "sources": []
         }
     
-    elif mode == ct.ANSWER_MODE_2:
-        # 社内問い合わせモード：LLMを使用した回答生成
-        # 会話履歴の準備
-        chat_history = []
-        if "messages" in st.session_state:
-            for i in range(0, len(st.session_state.messages), 2):
-                if i+1 < len(st.session_state.messages):
-                    chat_history.append((
-                        st.session_state.messages[i]["content"],
-                        st.session_state.messages[i+1]["content"]
-                    ))
-        
-        # 検索と回答生成の連携
-        retriever = vectorstore.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": ct.TOP_K_DOCUMENTS}
-        )
-        
-        chain = ConversationalRetrievalChain.from_llm(
-            llm=llm,
-            retriever=retriever,
-            return_source_documents=True
-        )
-        
-        # 質問に対する回答を生成
-        result = chain.invoke({"question": query, "chat_history": chat_history})
-        
-        # 回答と参照ソースを構築
-        sources = []
-        for doc in result["source_documents"]:
-            metadata = doc.metadata
-            sources.append({
-                "name": metadata.get("title", "不明"),
-                "url": metadata.get("url", "#"),
-                "page": metadata.get("page", ""),
-                "content": doc.page_content
-            })
-        
-        return {
-            "answer": result["answer"],
-            "sources": sources
-        }
-    
-    # デフォルトの応答
-    return {
-        "answer": "すみません、応答の生成中にエラーが発生しました。",
-        "sources": []
+    # プロンプトへの入力を準備
+    prompt_input = {
+        "context": context,
+        "question": query
     }
+    
+    # プロンプトを実行してLLMからの回答を取得
+    try:
+        # プロンプトからLLMへの入力を生成
+        prompt_content = prompt_template.format(**prompt_input)
+        logger.debug(f"プロンプト: {prompt_content}")
+        
+        # LLMで回答を生成
+        answer = llm.invoke(prompt_content)
+        answer_text = answer.content
+        
+        # モードに応じた回答処理
+        if st.session_state.mode == ct.ANSWER_MODE_1:
+            # 社内文書検索モードの場合、関連文書の一覧を返す
+            return {
+                "answer": answer_text,
+                "sources": sources
+            }
+        else:
+            # 社内問い合わせモードの場合、質問への回答と参照元を返す
+            return {
+                "answer": answer_text,
+                "sources": sources
+            }
+            
+    except Exception as e:
+        logger.error(f"LLM呼び出しエラー: {e}")
+        raise Exception(f"LLMからの回答取得に失敗しました: {e}")

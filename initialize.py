@@ -56,8 +56,6 @@ def initialize():
     load_dotenv()
     # OpenAI APIキーを環境変数から取得
     openai_api_key = os.getenv("OPENAI_API_KEY")
-    # Notion APIキーを環境変数から取得
-    notion_api_key = os.getenv("NOTION_API_KEY")
     # Notion統合トークンを環境変数から取得
     notion_integration_token = os.getenv("NOTION_INTEGRATION_TOKEN")
     # NotionデータベースIDを環境変数から取得
@@ -66,7 +64,7 @@ def initialize():
     # APIキーの存在チェック
     if not openai_api_key:
         raise ValueError("OpenAI APIキーが設定されていません。.envファイルを確認してください。")
-    if not notion_api_key or not notion_integration_token or not notion_database_id:
+    if not notion_integration_token or not notion_database_id:
         raise ValueError("Notion APIの設定が不足しています。.envファイルを確認してください。")
 
     # ==========================================
@@ -128,8 +126,7 @@ def initialize():
     # NotionDBLoader インスタンスの初期化
     notion_loader = NotionDBLoader(
         integration_token=notion_integration_token,
-        database_id=notion_database_id,
-        request_timeout=ct.NOTION_REQUEST_TIMEOUT
+        database_id=notion_database_id
     )
 
     # Notionからドキュメントを読み込み
@@ -178,7 +175,6 @@ def initialize():
             )
             vectorstore.persist()
             logger.info("ベクターストアを再構築しました")
-    
     except Exception as e:
         # 初回またはエラー時は新規作成
         logger.info(f"ベクターストアを新規作成します: {e}")
@@ -188,6 +184,7 @@ def initialize():
             persist_directory=ct.CHROMA_DIR
         )
         vectorstore.persist()
+        logger.info("ベクターストアを新規作成しました")
     
     # ベクターストアからRetrieverを作成
     st.session_state.retriever = vectorstore.as_retriever(
