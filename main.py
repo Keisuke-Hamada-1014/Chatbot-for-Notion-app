@@ -20,31 +20,50 @@ import components as cn
 # （自作）変数（定数）がまとめて定義・管理されているモジュール
 import constants as ct
 
+import os
+import requests
+import logging
+import streamlit as st
+from dotenv import load_dotenv
 
-############################################################
-# 2. 設定関連
-############################################################
-# ブラウザタブの表示文言を設定
-st.set_page_config(
-    page_title=ct.APP_NAME
-)
+# ① .env 読み込み
+load_dotenv()
 
-# ログ出力を行うためのロガーの設定
-logger = logging.getLogger(ct.LOGGER_NAME)
+# ② トークン読み込み確認
+token = os.getenv("NOTION_INTEGRATION_TOKEN")
+st.write("▶︎ 読み込まれた Notion トークン：", token)
+if not token:
+    st.error("‼️ 環境変数が読み込まれていません。`.env` を確認してください。")
+    st.stop()
 
+# ③ /users/me で認証チェック（詳細表示付き）
+def check_notion_auth():
+    token = os.getenv("NOTION_INTEGRATION_TOKEN")
+    st.write("▶︎ 読み込まれた Notion トークン：", token)
+    url = "https://api.notion.com/v1/users/me"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Notion-Version": "2022-06-28",
+    }
+    resp = requests.get(url, headers=headers)
+    st.write("▶︎ ステータスコード：", resp.status_code)
+    st.write("▶︎ レスポンステキスト：", resp.text)
+    if resp.status_code != 200:
+        st.error(f"❌ Notion 認証エラー ({resp.status_code}) が発生しました。")
+        st.stop()
 
-############################################################
-# 3. 初期化処理
-############################################################
+# 3. 認証チェックを実行
+check_notion_auth()
+
+# 以下、Streamlitアプリの初期化処理など
+st.set_page_config(page_title="My App")
+logger = logging.getLogger("my_app")
+from initialize import initialize
 try:
-    # 初期化処理（「initialize.py」の「initialize」関数を実行）
     initialize()
 except Exception as e:
-    # エラーログの出力
-    logger.error(f"{ct.INITIALIZE_ERROR_MESSAGE}\n{e}")
-    # エラーメッセージの画面表示
-    st.error(f"{ct.INITIALIZE_ERROR_MESSAGE}\n\nエラー詳細: {str(e)}", icon=ct.ERROR_ICON)
-    # 後続の処理を中断
+    logger.error(f"初期化失敗: {e}")
+    st.error(f"アプリ初期化エラー: {e}")
     st.stop()
 
 # アプリ起動時のログファイルへの出力
